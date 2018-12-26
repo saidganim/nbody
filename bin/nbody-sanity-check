@@ -1,0 +1,37 @@
+#!/bin/sh
+
+# compiles and tests a submission for validity
+
+# set: $THREADS $PROBLEM_FILE
+
+REFERENCE_OUTPUT_FILE=bin/REF_OUTPUT
+
+OUTPUT_FILE=nbody.test.out
+ERROR_FILE=nbody.test.err
+DIFF_FILE=nbody.test.diff
+
+echo "checking for correct output"
+
+echo prun -v -1 -np 2 -sge-script $PRUN_ETC/prun-openmpi nbody/nbody-par 32 0 nbody.ppm 100000 2> $ERROR_FILE | tee $OUTPUT_FILE
+prun -v -1 -np 2 -sge-script $PRUN_ETC/prun-openmpi nbody/nbody-par 32 0 nbody.ppm 100000 2> $ERROR_FILE | tee $OUTPUT_FILE
+
+if grep "took" $ERROR_FILE > /dev/null ; 
+then 
+    true ;
+else 
+    echo "*** The program did not print run time to stderr, please correct"
+    echo "stderr printout:"
+    cat $ERROR_FILE
+    exit ;
+fi
+
+diff $REFERENCE_OUTPUT_FILE $OUTPUT_FILE > $DIFF_FILE
+
+if test -s $DIFF_FILE; 
+then 
+    echo "*** The program generated wrong output!" 
+    echo "Diff between correct and found output:"
+    cat $DIFF_FILE;
+else 
+    echo "Output ok"; 
+fi
