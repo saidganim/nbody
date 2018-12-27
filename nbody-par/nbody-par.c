@@ -21,6 +21,9 @@
 
 int world_rank;
 int P;
+MPI_Status status;
+int chunk_size;
+int lborder, rborder;
 
 struct bodyType {
     double x[2];        /* Old and new X-axis coordinates */
@@ -57,13 +60,36 @@ struct world {
 #define R(w, B)        (w)->bodies[B].radius
 #define M(w, B)        (w)->bodies[B].mass
 
+#define MIN(a,b) ({__typeof__(a) _a = a; __typeof__(b) _b = b;\
+                    _a < _b? _a : _b;})
+
+static inline int on_master(){
+  return world_rank == 0;
+}
 
 static void clear_forces(struct world *world){
     int b;
 
     /* Clear force accumulation variables */
-    for (b = 0; b < world->bodyCt; ++b) {
+    for (b = lborder; b < rborder; ++b) {
         YF(world, b) = XF(world, b) = 0;
+    }
+}
+
+void gather_forces(struct world* world){
+    double forces[MAXBODIES * 2]; // poor stack :)
+    double forces2[MAXBODIES * 2]; // poor stack :)
+    memset(forces, 0x0, sizeof(double) * MAXBODIES * 2);
+    for(int i = lborder; i < rborder; ++i){
+        forces[i * 2] = world->bodies[i].xf;
+        forces[i * 2 + 1] = world->bodies[i].yf;
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+    // gathering forces from all the nodes to all the nodes :)
+    MPI_Allreduce(forces, forces2, world->bodyCt * 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    for(int i = 0; i < world->bodyCt; ++i){
+        world->bodies[i].xf = forces2[i * 2];
+        world->bodies[i].yf = forces2[i * 2 + 1];
     }
 }
 
@@ -73,7 +99,7 @@ static void compute_forces(struct world *world){
     /* Incrementally accumulate forces from each body pair,
        skipping force of body on itself (c == b)
     */
-    for (b = 0; b < world->bodyCt; ++b) {
+    for (b = lborder; b < rborder; ++b) {
         for (c = b + 1; c < world->bodyCt; ++c) {
             double dx = X(world, c) - X(world, b);
             double dy = Y(world, c) - Y(world, b);
@@ -100,7 +126,7 @@ static void compute_forces(struct world *world){
 static void compute_velocities(struct world *world){
     int b;
 
-    for (b = 0; b < world->bodyCt; ++b) {
+    for (b = lborder; b < rborder; ++b) {
         double xv = XV(world, b);
         double yv = YV(world, b);
         double force = sqrt(xv*xv + yv*yv) * FRICTION;
@@ -116,7 +142,7 @@ static void compute_velocities(struct world *world){
 static void compute_positions(struct world *world){
     int b;
 
-    for (b = 0; b < world->bodyCt; ++b) {
+    for (b = lborder; b < rborder; ++b) {
         double xn = X(world, b) + XV(world, b) * DELTA_T;
         double yn = Y(world, b) + YV(world, b) * DELTA_T;
 
@@ -265,57 +291,14 @@ static int map_P6(const char *filename, int *xdim, int *ydim, struct filemap *fi
 
     /* Here we are... next byte begins the 24-bit data */
     filemap->image = p + 1;
-
+    filemap_close(filemap);
+    filemap = 0x0;
     return 0;
 
 ppm_abort:
     filemap_close(filemap);
-
+    filemap = 0x0;
     return -1;
-}
-
-
-static inline void color(const struct world *world, unsigned char *image, int x, int y, int b){
-    unsigned char *p = image + (3 * (x + (y * world->xdim)));
-    int tint = ((0xfff * (b + 1)) / (world->bodyCt + 2));
-
-    p[0] = (tint & 0xf) << 4;
-    p[1] = (tint & 0xf0);
-    p[2] = (tint & 0xf00) >> 4;
-}
-
-static inline void black(const struct world *world, unsigned char *image, int x, int y){
-    unsigned char *p = image + (3 * (x + (y * world->xdim)));
-
-    p[2] = (p[1] = (p[0] = 0));
-}
-
-static void display(const struct world *world, unsigned char *image){
-    double i, j;
-    int b;
-
-    /* For each pixel */
-    for (j = 0; j < world->ydim; ++j) {
-        for (i = 0; i < world->xdim; ++i) {
-            /* Find the first body covering here */
-            for (b = 0; b < world->bodyCt; ++b) {
-                double dy = Y(world, b) - j;
-                double dx = X(world, b) - i;
-                double d = sqrt(dx*dx + dy*dy);
-
-                if (d <= R(world, b)+0.5) {
-                    /* This is it */
-                    color(world, image, i, j, b);
-                    goto colored;
-                }
-            }
-
-            /* No object -- empty space */
-            black(world, image, i, j);
-
-colored:        ;
-        }
-    }
 }
 
 static void print(struct world *world){
@@ -332,15 +315,14 @@ static void print(struct world *world){
 */
 
 int main(int argc, char **argv){
-    unsigned int lastup = 0;
-    unsigned int secsup;
     int b;
     int steps;
     double rtime;
     struct timeval start;
     struct timeval end;
     struct filemap image_map;
-
+    int dim_to_send[2];
+            
     // Setting up MPI environment
     MPI_Init(NULL, NULL);
     MPI_Comm_size(MPI_COMM_WORLD, &P);
@@ -365,18 +347,38 @@ int main(int argc, char **argv){
         fprintf(stderr, "Using two bodies...\n");
         world->bodyCt = 2;
     }
-    secsup = atoi(argv[2]);
-    if (map_P6(argv[3], &world->xdim, &world->ydim, &image_map) == -1) {
-        fprintf(stderr, "Cannot read %s: %s\n", argv[3], strerror(errno));
-        exit(1);
+    
+    chunk_size = ceil((double)world->bodyCt / P);
+    lborder = world_rank * chunk_size;
+    rborder = MIN(lborder + chunk_size, world->bodyCt);
+
+    if(on_master()){ // only master reads the file, then sends values to everybody...
+        if (map_P6(argv[3], &world->xdim, &world->ydim, &image_map) == -1) {
+            dim_to_send[0] = dim_to_send[1] = -1;
+            fprintf(stderr, "Master cannot read %s: %s\n", argv[3], strerror(errno));
+            MPI_Bcast(dim_to_send, 2, MPI_INT, 0, MPI_COMM_WORLD);
+            MPI_Finalize();
+            exit(1);
+        }
+        dim_to_send[0] = world->xdim; dim_to_send[1] = world->ydim;
     }
+
+    MPI_Bcast(dim_to_send, 2, MPI_INT, 0, MPI_COMM_WORLD);
+    if(!on_master()){
+        world->xdim = dim_to_send[0]; world->ydim = dim_to_send[1];
+    }
+    
     steps = atoi(argv[4]);
 
     fprintf(stderr, "Running N-body with %i bodies and %i steps\n", world->bodyCt, steps);
 
     /* Initialize simulation data */
     srand(SEED);
-    for (b = 0; b < world->bodyCt; ++b) {
+    
+
+    for(int i = 0; i < lborder; ++i) rand();
+
+    for (b = lborder; b < rborder; ++b) {
         X(world, b) = (rand() % world->xdim);
         Y(world, b) = (rand() % world->ydim);
         R(world, b) = 1 + ((b*b + 1.0) * sqrt(1.0 * ((world->xdim * world->xdim) + (world->ydim * world->ydim)))) /
@@ -385,15 +387,16 @@ int main(int argc, char **argv){
         XV(world, b) = ((rand() % 20000) - 10000) / 2000.0;
         YV(world, b) = ((rand() % 20000) - 10000) / 2000.0;
     }
-
-    if (gettimeofday(&start, 0) != 0) {
-        fprintf(stderr, "could not do timing\n");
-        exit(1);
-    }
+    if(on_master())
+        if (gettimeofday(&start, 0) != 0) {
+            fprintf(stderr, "could not do timing\n");
+            exit(1);
+        }
 
     /* Main Loop */
     while (steps--) {
         clear_forces(world);
+        gather_forces(world);
         compute_forces(world);
         compute_velocities(world);
         compute_positions(world);
@@ -401,28 +404,27 @@ int main(int argc, char **argv){
         /* Flip old & new coordinates */
         world->old ^= 1;
 
-        /*Time for a display update?*/ 
-        if (secsup > 0 && (time(0) - lastup) > secsup) {
-            display(world, image_map.image);
-            msync(image_map.map, image_map.fsize, MS_SYNC); /* Force write */
-            lastup = time(0);
+    }
+    MPI_Barrier(MPI_COMM_WORLD); // every node has to finish the job at this point
+    if(on_master()){
+        if (gettimeofday(&end, 0) != 0) {
+            fprintf(stderr, "could not do timing\n");
+            exit(1);
         }
+
+        // Gather info from all process ...
+
+        rtime = (end.tv_sec + (end.tv_usec / 1000000.0)) - 
+                    (start.tv_sec + (start.tv_usec / 1000000.0));
+
+        fprintf(stderr, "N-body took %10.3f seconds\n", rtime);
+
+        print(world);
+    } else {
+        // send info to master node ...
     }
-
-    if (gettimeofday(&end, 0) != 0) {
-        fprintf(stderr, "could not do timing\n");
-        exit(1);
-    }
-
-    rtime = (end.tv_sec + (end.tv_usec / 1000000.0)) - 
-                (start.tv_sec + (start.tv_usec / 1000000.0));
-
-    fprintf(stderr, "N-body took %10.3f seconds\n", rtime);
-
-    print(world);
-
-    filemap_close(&image_map);
-
+    
+    MPI_Finalize();
     free(world);
 
     return 0;
