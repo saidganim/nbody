@@ -74,29 +74,23 @@ static inline int on_master(){
 }
 
 static void clear_forces(struct world *world){
-    int b;
-
     /* Clear force accumulation variables */
-    #pragma omp parallel for
-    for (b = lborder; b < world->bodyCt; ++b) {
+    for (int b = lborder; b < world->bodyCt; ++b) {
         YF(world, b) = XF(world, b) = 0;
     }
 }
 
 void gather_coords(struct world* world){
-    #pragma omp parallel for
     for(int i = lborder; i < rborder; ++i){
         coords[(i - lborder) * 2] = X(world, i);
         coords[(i - lborder) * 2 + 1] = Y(world, i);
     }
     // Sending own coordinates to all revious process (VERY INEFFICIENT)
-    #pragma omp parallel for
     for(int i = 0; i < world_rank; ++i){
         MPI_Isend(coords, chunk_size * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &request);
     }
 
     // Receiving coordinates of other process
-    #pragma omp parallel for
     for(int i = world_rank + 1; i < P; ++i){
         MPI_Recv(coords2, chunk_size * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &status);
         for(int j = i * chunk_size; j < (i + 1) * chunk_size; ++j){
@@ -108,7 +102,6 @@ void gather_coords(struct world* world){
 
 void gather_coords_bcast(struct world* world){ // gathering coordinates via MPI_Bcast( might save messages in the network)
     // Sending own coordinates to all revious process
-    #pragma omp parallel for
     for(int i = 0; i < P; ++i){
         if(i == world_rank)
              for(int j = lborder; j < rborder; ++j){
@@ -126,19 +119,16 @@ void gather_coords_bcast(struct world* world){ // gathering coordinates via MPI_
 }
 
 void gather_forces(struct world* world){
-    #pragma omp parallel for
     for(int i = lborder; i < world->bodyCt; ++i){
         forces[i * 2] = XF(world, i);
         forces[i * 2 + 1] = YF(world, i);
     }
     // Sending own coordinates to all revious process (VERY INEFFICIENT)
-    #pragma omp parallel for
     for(int i = world_rank + 1; i < P; ++i){
         MPI_Isend(forces, world->bodyCt * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &request);
     }
 
     // Receiving coordinates of other process
-    #pragma omp parallel for
     for(int i = 0; i < world_rank; ++i){
         MPI_Recv(forces2, world->bodyCt * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &status);
         for(int j = lborder; j < rborder; ++j){
@@ -151,7 +141,6 @@ void gather_forces(struct world* world){
 
 void gather_forces_reduce(struct world* world){
     memset(forces, 0x0, sizeof(double) * world->bodyCt * 2);
-    #pragma omp parallel for
     for(int i = lborder; i < world->bodyCt; ++i){
         forces[i * 2] = world->bodies[i].xf;
         forces[i * 2 + 1] = world->bodies[i].yf;
@@ -159,7 +148,6 @@ void gather_forces_reduce(struct world* world){
     MPI_Barrier(MPI_COMM_WORLD);
     // gathering forces from all the nodes to all the nodes :)
     MPI_Allreduce(forces, forces2, world->bodyCt * 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    #pragma omp parallel for
     for(int i = 0; i < world->bodyCt; ++i){
         world->bodies[i].xf = forces2[i * 2];
         world->bodies[i].yf = forces2[i * 2 + 1];
@@ -167,14 +155,12 @@ void gather_forces_reduce(struct world* world){
 }
 
 static void compute_forces(struct world *world){
-    int b, c;
-
     /* Incrementally accumulate forces from each body pair,
        skipping force of body on itself (c == b)
     */
     #pragma omp parallel for
-    for (b = lborder; b < rborder; ++b) {
-        for (c = b + 1; c < world->bodyCt; ++c) {
+    for (int b = lborder; b < rborder; ++b) {
+        for (int c = b + 1; c < world->bodyCt; ++c) {
             double dx = X(world, c) - X(world, b);
             double dy = Y(world, c) - Y(world, b);
             double angle = atan2(dy, dx);
@@ -189,18 +175,21 @@ static void compute_forces(struct world *world){
             /* Slightly sneaky...
                force of b on c is negative of c on b;
             */
+           #pragma omp critical 
+           {
             XF(world, b) += xf;
             YF(world, b) += yf;
             XF(world, c) -= xf;
             YF(world, c) -= yf;
+           }
+            
         }
     }
 }
 
 static void compute_velocities(struct world *world){
-    int b;
     #pragma omp parallel for
-    for (b = lborder; b < rborder; ++b) {
+    for (int b = lborder; b < rborder; ++b) {
         double xv = XV(world, b);
         double yv = YV(world, b);
         double force = sqrt(xv*xv + yv*yv) * FRICTION;
@@ -214,9 +203,8 @@ static void compute_velocities(struct world *world){
 }
 
 static void compute_positions(struct world *world){
-    int b;
-    #pragma omp parallel for
-    for (b = lborder; b < rborder; ++b) {
+    #pragma omp parallel for    
+    for (int b = lborder; b < rborder; ++b) {
         double xn = X(world, b) + XV(world, b) * DELTA_T;
         double yn = Y(world, b) + YV(world, b) * DELTA_T;
 
@@ -403,7 +391,7 @@ int main(int argc, char **argv){
     MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
 
     // Setting up OpenMP Context
-    omp_set_num_threads(4);
+    omp_set_num_threads(2);
 
     struct world *world = (struct world*)calloc(1, sizeof *world);
     if (world == NULL) {
@@ -457,7 +445,6 @@ int main(int argc, char **argv){
 
     /* Initialize simulation data */
     srand(SEED);
-    #pragma omp parallel for
     for (b = 0; b < world->bodyCt; ++b) {
         X(world, b) = (rand() % world->xdim);
         Y(world, b) = (rand() % world->ydim);
