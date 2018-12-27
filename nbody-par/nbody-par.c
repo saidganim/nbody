@@ -99,6 +99,25 @@ void gather_coords(struct world* world){
     }
 }
 
+void gather_coords_bcast(struct world* world){ // gathering coordinates via MPI_Bcast( might save messages in the network)
+    double coords[chunk_size * 2]; // poor stack :)
+
+    // Sending own coordinates to all revious process (VERY INEFFICIENT)
+    for(int i = 0; i < P; ++i){
+        if(i == world_rank)
+             for(int j = lborder; j < rborder; ++j){
+                coords[(j - lborder) * 2] = X(world, j);
+                coords[(j - lborder) * 2 + 1] = Y(world, j);
+            }
+        MPI_Bcast(coords, chunk_size * 2, MPI_DOUBLE, i, MPI_COMM_WORLD);
+        if(i != world_rank){
+            for(int j = i * chunk_size; j < (i + 1) * chunk_size; ++j){
+                X(world, j) = coords[(j - i * chunk_size) * 2];
+                Y(world, j) = coords[(j - i * chunk_size) * 2 + 1];
+            }
+        }
+    }
+}
 
 void gather_forces(struct world* world){
     double forces[MAXBODIES * 2]; // poor stack :)
@@ -417,7 +436,7 @@ int main(int argc, char **argv){
     /* Main Loop */
     while (steps--) {
         clear_forces(world);
-        gather_coords(world);
+        gather_coords_bcast(world);
         compute_forces(world);
         gather_forces(world);
         compute_velocities(world);
