@@ -88,7 +88,6 @@ void gather_coords(struct world* world){
         coords[(i - lborder) * 2 + 1] = Y(world, i);
     }
     // Sending own coordinates to all revious process (VERY INEFFICIENT)
-    #pragma omp parallel for
     for(int i = 0; i < world_rank; ++i){
         MPI_Isend(coords, chunk_size * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &request);
     }
@@ -128,7 +127,6 @@ void gather_forces(struct world* world){
         forces[i * 2 + 1] = YF(world, i);
     }
     // Sending own coordinates to all revious process (VERY INEFFICIENT)
-    #pragma omp parallel for
     for(int i = world_rank + 1; i < P; ++i){
         MPI_Isend(forces, world->bodyCt * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &request);
     }
