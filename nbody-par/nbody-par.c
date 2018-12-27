@@ -399,15 +399,6 @@ int main(int argc, char **argv){
     /* Initialize simulation data */
     srand(SEED);
     
-
-    // for(int i = 0; i < lborder; ++i){
-    //   X(world, i) = rand() + 1;
-    //   Y(world, i) = rand() + 1;
-    //   R(world, i) = rand() + 1;
-    //   M(world, i) = rand() + 1;
-      
-    // } 
-
     for (b = 0; b < world->bodyCt; ++b) {
         X(world, b) = (rand() % world->xdim);
         Y(world, b) = (rand() % world->ydim);
@@ -429,12 +420,6 @@ int main(int argc, char **argv){
         gather_coords(world);
         compute_forces(world);
         gather_forces(world);
-        // // if(on_master()){
-        //     for(int i = 0; i < world->bodyCt; ++i){
-        //     printf("[%d] after %f:%f ", world_rank, world->bodies[i].xf, world->bodies[i].yf);
-        // }
-        // printf("\n====================================================\n");
-        // // }
         compute_velocities(world);
         compute_positions(world);
 
