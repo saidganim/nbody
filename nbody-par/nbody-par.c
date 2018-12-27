@@ -25,6 +25,10 @@ MPI_Status status;
 MPI_Request request;
 int chunk_size;
 int lborder, rborder;
+double *forces;
+double *forces2;
+double *coords;
+double *coords2;
 
 struct bodyType {
     double x[2];        /* Old and new X-axis coordinates */
@@ -78,8 +82,6 @@ static void clear_forces(struct world *world){
 }
 
 void gather_coords(struct world* world){
-    double coords[chunk_size * 2]; // poor stack :)
-
     for(int i = lborder; i < rborder; ++i){
         coords[(i - lborder) * 2] = X(world, i);
         coords[(i - lborder) * 2 + 1] = Y(world, i);
@@ -91,17 +93,15 @@ void gather_coords(struct world* world){
 
     // Receiving coordinates of other process
     for(int i = world_rank + 1; i < P; ++i){
-        MPI_Recv(coords, chunk_size * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &status);
+        MPI_Recv(coords2, chunk_size * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &status);
         for(int j = i * chunk_size; j < (i + 1) * chunk_size; ++j){
-            X(world, j) = coords[(j - i * chunk_size) * 2];
-            Y(world, j) = coords[(j - i * chunk_size) * 2 + 1];
+            X(world, j) = coords2[(j - i * chunk_size) * 2];
+            Y(world, j) = coords2[(j - i * chunk_size) * 2 + 1];
         }
     }
 }
 
 void gather_coords_bcast(struct world* world){ // gathering coordinates via MPI_Bcast( might save messages in the network)
-    double coords[chunk_size * 2]; // poor stack :)
-
     // Sending own coordinates to all revious process (VERY INEFFICIENT)
     for(int i = 0; i < P; ++i){
         if(i == world_rank)
@@ -120,9 +120,28 @@ void gather_coords_bcast(struct world* world){ // gathering coordinates via MPI_
 }
 
 void gather_forces(struct world* world){
-    double forces[MAXBODIES * 2]; // poor stack :)
-    double forces2[MAXBODIES * 2]; // poor stack :)
-    memset(forces, 0x0, sizeof(double) * MAXBODIES * 2);
+    for(int i = lborder; i < world->bodyCt; ++i){
+        forces[i * 2] = XF(world, i);
+        forces[i * 2 + 1] = YF(world, i);
+    }
+    // Sending own coordinates to all revious process (VERY INEFFICIENT)
+    for(int i = world_rank + 1; i < P; ++i){
+        MPI_Isend(forces, world->bodyCt * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &request);
+    }
+
+    // Receiving coordinates of other process
+    for(int i = 0; i < world_rank; ++i){
+        MPI_Recv(forces2, world->bodyCt * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &status);
+        for(int j = lborder; j < rborder; ++j){
+            XF(world, j) += forces2[j * 2];
+            YF(world, j) += forces2[j * 2 + 1];
+        }
+    }
+}
+
+
+void gather_forces_reduce(struct world* world){
+    memset(forces, 0x0, sizeof(double) * world->bodyCt * 2);
     for(int i = lborder; i < world->bodyCt; ++i){
         forces[i * 2] = world->bodies[i].xf;
         forces[i * 2 + 1] = world->bodies[i].yf;
@@ -395,6 +414,12 @@ int main(int argc, char **argv){
     lborder = world_rank * chunk_size;
     rborder = MIN(lborder + chunk_size, world->bodyCt);
 
+    // Allocate once
+    forces = (double*)malloc(sizeof(double) * world->bodyCt * 2);
+    forces2 = (double*)malloc(sizeof(double) * world->bodyCt * 2);
+    coords = (double*)malloc(sizeof(double) * chunk_size * 2);
+    coords2 = (double*)malloc(sizeof(double) * chunk_size * 2);
+
     if(on_master()){ // only master reads the file, then sends values to everybody...
         if (map_P6(argv[3], &world->xdim, &world->ydim, &image_map) == -1) {
             dim_to_send[0] = dim_to_send[1] = -1;
@@ -436,7 +461,7 @@ int main(int argc, char **argv){
     /* Main Loop */
     while (steps--) {
         clear_forces(world);
-        gather_coords_bcast(world);
+        gather_coords(world);
         compute_forces(world);
         gather_forces(world);
         compute_velocities(world);
@@ -470,6 +495,9 @@ int main(int argc, char **argv){
     
     MPI_Finalize();
     free(world);
-
+    free(forces);
+    free(forces2);
+    free(coords);
+    free(coords2);
     return 0;
 }
