@@ -11,7 +11,7 @@
 #include <string.h>
 #include <errno.h>
 #include <mpi.h>
-#include <openmp.h>
+#include <omp.h>
 
 #define GRAVITY     1.1
 #define FRICTION    0.01

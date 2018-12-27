@@ -1,7 +1,7 @@
 CFLAGS	+= -Wall
 CFLAGS	+= -O3
 CFLAGS	+= -g2
-CFLAGS	+= -fomp
+CFLAGS	+= -fopenmp 
 MPICC = mpic++
 MPIRUN = mpirun
 
