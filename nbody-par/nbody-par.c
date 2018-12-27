@@ -463,7 +463,7 @@ int main(int argc, char **argv){
         clear_forces(world);
         gather_coords(world);
         compute_forces(world);
-        gather_forces(world);
+        gather_forces_reduce(world);
         compute_velocities(world);
         compute_positions(world);
 
