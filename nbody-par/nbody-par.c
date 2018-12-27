@@ -413,7 +413,7 @@ int main(int argc, char **argv){
     
     steps = atoi(argv[4]);
 
-    fprintf(stderr, "Running N-body with %i bodies and %i steps\n", world->bodyCt, steps);
+    if(on_master()) fprintf(stderr, "Running N-body with %i bodies and %i steps\n", world->bodyCt, steps);
 
     /* Initialize simulation data */
     srand(SEED);
