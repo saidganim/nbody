@@ -22,6 +22,7 @@
 int world_rank;
 int P;
 MPI_Status status;
+MPI_Request request;
 int chunk_size;
 int lborder, rborder;
 
@@ -71,16 +72,39 @@ static void clear_forces(struct world *world){
     int b;
 
     /* Clear force accumulation variables */
-    for (b = lborder; b < rborder; ++b) {
+    for (b = lborder; b < world->bodyCt; ++b) {
         YF(world, b) = XF(world, b) = 0;
     }
 }
+
+void gather_coords(struct world* world){
+    double coords[chunk_size * 2]; // poor stack :)
+
+    for(int i = lborder; i < rborder; ++i){
+        coords[(i - lborder) * 2] = X(world, i);
+        coords[(i - lborder) * 2 + 1] = Y(world, i);
+    }
+    // Sending own coordinates to all revious process (VERY INEFFICIENT)
+    for(int i = 0; i < world_rank; ++i){
+        MPI_Isend(coords, chunk_size * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &request);
+    }
+
+    // Receiving coordinates of other process
+    for(int i = world_rank + 1; i < P; ++i){
+        MPI_Recv(coords, chunk_size * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &status);
+        for(int j = i * chunk_size; j < (i + 1) * chunk_size; ++j){
+            X(world, j) = coords[(j - i * chunk_size) * 2];
+            Y(world, j) = coords[(j - i * chunk_size) * 2 + 1];
+        }
+    }
+}
+
 
 void gather_forces(struct world* world){
     double forces[MAXBODIES * 2]; // poor stack :)
     double forces2[MAXBODIES * 2]; // poor stack :)
     memset(forces, 0x0, sizeof(double) * MAXBODIES * 2);
-    for(int i = lborder; i < rborder; ++i){
+    for(int i = lborder; i < world->bodyCt; ++i){
         forces[i * 2] = world->bodies[i].xf;
         forces[i * 2 + 1] = world->bodies[i].yf;
     }
@@ -376,9 +400,15 @@ int main(int argc, char **argv){
     srand(SEED);
     
 
-    for(int i = 0; i < lborder; ++i) rand();
+    // for(int i = 0; i < lborder; ++i){
+    //   X(world, i) = rand() + 1;
+    //   Y(world, i) = rand() + 1;
+    //   R(world, i) = rand() + 1;
+    //   M(world, i) = rand() + 1;
+      
+    // } 
 
-    for (b = lborder; b < rborder; ++b) {
+    for (b = 0; b < world->bodyCt; ++b) {
         X(world, b) = (rand() % world->xdim);
         Y(world, b) = (rand() % world->ydim);
         R(world, b) = 1 + ((b*b + 1.0) * sqrt(1.0 * ((world->xdim * world->xdim) + (world->ydim * world->ydim)))) /
@@ -396,8 +426,15 @@ int main(int argc, char **argv){
     /* Main Loop */
     while (steps--) {
         clear_forces(world);
-        gather_forces(world);
+        gather_coords(world);
         compute_forces(world);
+        gather_forces(world);
+        // // if(on_master()){
+        //     for(int i = 0; i < world->bodyCt; ++i){
+        //     printf("[%d] after %f:%f ", world_rank, world->bodies[i].xf, world->bodies[i].yf);
+        // }
+        // printf("\n====================================================\n");
+        // // }
         compute_velocities(world);
         compute_positions(world);
 
@@ -418,10 +455,13 @@ int main(int argc, char **argv){
                     (start.tv_sec + (start.tv_usec / 1000000.0));
 
         fprintf(stderr, "N-body took %10.3f seconds\n", rtime);
-
+        for(int i = 1; i < P; ++i){
+            MPI_Recv(&world->bodies[i * chunk_size], chunk_size * sizeof(struct bodyType) / sizeof(double), MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &status);    
+        }
         print(world);
     } else {
         // send info to master node ...
+        MPI_Send(&world->bodies[lborder], chunk_size * sizeof(struct bodyType) / sizeof(double), MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
     }
     
     MPI_Finalize();
