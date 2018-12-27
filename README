@@ -4,7 +4,7 @@ Current N-body simulation is used for Parallel Programming Practical course at V
 
 Sequential version is provided by teachers. Parallel version has to be implemented by a student. A student has to use MPI for naive parallel implementation. A student is free to improve parallel version with any other libraries and ISA (OpenMP, CUDA, SIMD ISA). Up to student. Here I provide basic naive implementation first. I will try to imporove naive implementation with some improvements in future:
 TODO:
-	- Try to implement Intel intrinsics(SSE2 or AVX).
+	- Try to implement Intel intrinsics(SSE2 or AVX). - HARD TO IMPLEMENT, DATA STRUCTURES HAS TO BE CHANGED
 	- Using OpenMP for some loops could improve performance.
 	- Moving some computations to GPU accelerator also could help( very bonus , only if I have time for it) :)
 
