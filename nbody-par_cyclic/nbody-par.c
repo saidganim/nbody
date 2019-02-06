@@ -76,31 +76,34 @@ static void clear_forces(struct world *world){
     int b;
 
     /* Clear force accumulation variables */
-    for (b = lborder; b < world->bodyCt; ++b) {
+    for (b = 0; b < world->bodyCt; ++b) {
         YF(world, b) = XF(world, b) = 0;
     }
 }
 
 void gather_coords(struct world* world){
-    for(int i = lborder; i < rborder; ++i){
-        coords[(i - lborder) * 2] = X(world, i);
-        coords[(i - lborder) * 2 + 1] = Y(world, i);
+    for(int i = world_rank, j = 0; i < world->bodyCt; i += P, ++j){
+        coords[j * 2] = X(world, i);
+        coords[j * 2 + 1] = Y(world, i);
     }
-    // Sending own coordinates to all revious process (VERY INEFFICIENT)
-    for(int i = 0; i < world_rank; ++i){
+    for(int i = 0; i < P; ++i){
+        if(i == world_rank) continue;
         MPI_Isend(coords, chunk_size * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &request);
     }
 
     // Receiving coordinates of other process
-    for(int i = world_rank + 1; i < P; ++i){
+    for(int i = 0; i < P; ++i){
+        if(i == world_rank) continue;
         MPI_Recv(coords2, chunk_size * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &status);
-        for(int j = i * chunk_size; j < (i + 1) * chunk_size; ++j){
-            X(world, j) = coords2[(j - i * chunk_size) * 2];
-            Y(world, j) = coords2[(j - i * chunk_size) * 2 + 1];
+        for(int j = i, k = 0; j < world->bodyCt; j += P, ++k){
+            X(world, j) = coords2[k * 2];
+            Y(world, j) = coords2[k * 2 + 1];
         }
     }
 }
 
+
+// NOT IMPLEMENTED FOR CYCLIC DISTRIBUTION DUE TO THE FACT THAT IT'S SLOW
 void gather_coords_bcast(struct world* world){ // gathering coordinates via MPI_Bcast( might save messages in the network)
     // Sending own coordinates to all revious process (VERY INEFFICIENT)
     for(int i = 0; i < P; ++i){
@@ -119,6 +122,7 @@ void gather_coords_bcast(struct world* world){ // gathering coordinates via MPI_
     }
 }
 
+// NOT IMPLEMENTED FOR CYCLIC DISTRIBUTION DUE TO THE FACT THAT IT'S SLOW
 void gather_forces(struct world* world){
     for(int i = lborder; i < world->bodyCt; ++i){
         forces[i * 2] = XF(world, i);
@@ -142,7 +146,7 @@ void gather_forces(struct world* world){
 
 void gather_forces_reduce(struct world* world){
     memset(forces, 0x0, sizeof(double) * world->bodyCt * 2);
-    for(int i = lborder; i < world->bodyCt; ++i){
+    for(int i = 0; i < world->bodyCt; ++i){
         forces[i * 2] = world->bodies[i].xf;
         forces[i * 2 + 1] = world->bodies[i].yf;
     }
@@ -161,7 +165,7 @@ static void compute_forces(struct world *world){
     /* Incrementally accumulate forces from each body pair,
        skipping force of body on itself (c == b)
     */
-    for (b = lborder; b < rborder; ++b) {
+    for (b = world_rank; b < world->bodyCt; b += P) {
         for (c = b + 1; c < world->bodyCt; ++c) {
             double dx = X(world, c) - X(world, b);
             double dy = Y(world, c) - Y(world, b);
@@ -188,7 +192,7 @@ static void compute_forces(struct world *world){
 static void compute_velocities(struct world *world){
     int b;
 
-    for (b = lborder; b < rborder; ++b) {
+    for (b = world_rank; b < world->bodyCt; b += P) {
         double xv = XV(world, b);
         double yv = YV(world, b);
         double force = sqrt(xv*xv + yv*yv) * FRICTION;
@@ -204,7 +208,7 @@ static void compute_velocities(struct world *world){
 static void compute_positions(struct world *world){
     int b;
 
-    for (b = lborder; b < rborder; ++b) {
+    for (b = world_rank; b < world->bodyCt; b += P) {
         double xn = X(world, b) + XV(world, b) * DELTA_T;
         double yn = Y(world, b) + YV(world, b) * DELTA_T;
 
