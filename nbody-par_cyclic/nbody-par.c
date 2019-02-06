@@ -487,17 +487,20 @@ int main(int argc, char **argv){
         rtime = (end.tv_sec + (end.tv_usec / 1000000.0)) - 
                     (start.tv_sec + (start.tv_usec / 1000000.0));
 
-        fprintf(stderr, "N-body took %10.3f seconds\n", rtime);
         for(int i = 1; i < P; ++i){
-            MPI_Recv(&world->bodies[i * chunk_size], chunk_size * sizeof(struct bodyType) / sizeof(double), MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &status);    
+            for(int j = i; j < world->bodyCt; j += P)
+                MPI_Recv(&world->bodies[j], sizeof(struct bodyType) / sizeof(double), MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &status);    
         }
         print(world);
     } else {
         // send info to master node ...
-        MPI_Send(&world->bodies[lborder], chunk_size * sizeof(struct bodyType) / sizeof(double), MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
+        for(int j = world_rank; j < world->bodyCt; j += P)
+            MPI_Send(&world->bodies[j], sizeof(struct bodyType) / sizeof(double), MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
     }
     
     MPI_Finalize();
+    if(on_master())
+        fprintf(stderr, "N-body took %10.3f seconds\n", rtime);
     free(world);
     free(forces);
     free(forces2);
