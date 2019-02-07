@@ -74,38 +74,45 @@ static inline int on_master(){
 }
 
 static void clear_forces(struct world *world){
+    int b;
+
     /* Clear force accumulation variables */
     #pragma omp parallel for
-    for (int b = lborder; b < world->bodyCt; ++b) {
+    for (b = 0; b < world->bodyCt; ++b) {
         YF(world, b) = XF(world, b) = 0;
     }
 }
 
 void gather_coords(struct world* world){
     #pragma omp parallel for
-    for(int i = lborder; i < rborder; ++i){
-        coords[(i - l   border) * 2] = X(world, i);
-        coords[(i - lborder) * 2 + 1] = Y(world, i);
+    for(int i = world_rank; i < world->bodyCt; i += P){
+        int j = i / P;
+        coords[j * 2] = X(world, i);
+        coords[j * 2 + 1] = Y(world, i);
     }
-    // Sending own coordinates to all revious process (VERY INEFFICIENT)
+
     #pragma omp parallel for
-    for(int i = 0; i < world_rank; ++i){
+    for(int i = 0; i < P; ++i){
+        if(i == world_rank) continue;
         MPI_Isend(coords, chunk_size * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &request);
     }
 
     // Receiving coordinates of other process
     #pragma omp parallel for
-    for(int i = world_rank + 1; i < P; ++i){
+    for(int i = 0; i < P; ++i){
+        if(i == world_rank) continue;
         MPI_Recv(coords2, chunk_size * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &status);
-        for(int j = i * chunk_size; j < (i + 1) * chunk_size; ++j){
-            X(world, j) = coords2[(j - i * chunk_size) * 2];
-            Y(world, j) = coords2[(j - i * chunk_size) * 2 + 1];
+        for(int j = i, k = 0; j < world->bodyCt; j += P, ++k){
+            X(world, j) = coords2[k * 2];
+            Y(world, j) = coords2[k * 2 + 1];
         }
     }
 }
 
+
+// NOT IMPLEMENTED FOR CYCLIC DISTRIBUTION DUE TO THE FACT THAT IT'S SLOW
 void gather_coords_bcast(struct world* world){ // gathering coordinates via MPI_Bcast( might save messages in the network)
-    // Sending own coordinates to all revious process
+    // Sending own coordinates to all revious process (VERY INEFFICIENT)
     for(int i = 0; i < P; ++i){
         if(i == world_rank)
              for(int j = lborder; j < rborder; ++j){
@@ -122,8 +129,8 @@ void gather_coords_bcast(struct world* world){ // gathering coordinates via MPI_
     }
 }
 
+// NOT IMPLEMENTED FOR CYCLIC DISTRIBUTION DUE TO THE FACT THAT IT'S SLOW
 void gather_forces(struct world* world){
-    #pragma omp parallel for // cache false sharing is possible here
     for(int i = lborder; i < world->bodyCt; ++i){
         forces[i * 2] = XF(world, i);
         forces[i * 2 + 1] = YF(world, i);
@@ -147,7 +154,7 @@ void gather_forces(struct world* world){
 void gather_forces_reduce(struct world* world){
     memset(forces, 0x0, sizeof(double) * world->bodyCt * 2);
     #pragma omp parallel for
-    for(int i = lborder; i < world->bodyCt; ++i){
+    for(int i = 0; i < world->bodyCt; ++i){
         forces[i * 2] = world->bodies[i].xf;
         forces[i * 2 + 1] = world->bodies[i].yf;
     }
@@ -162,11 +169,13 @@ void gather_forces_reduce(struct world* world){
 }
 
 static void compute_forces(struct world *world){
+    // int b, c;
+
     /* Incrementally accumulate forces from each body pair,
        skipping force of body on itself (c == b)
     */
     #pragma omp parallel for
-    for (int b = lborder; b < rborder; ++b) {
+    for (int b = world_rank; b < world->bodyCt; b += P) {
         for (int c = b + 1; c < world->bodyCt; ++c) {
             double dx = X(world, c) - X(world, b);
             double dy = Y(world, c) - Y(world, b);
@@ -182,21 +191,21 @@ static void compute_forces(struct world *world){
             /* Slightly sneaky...
                force of b on c is negative of c on b;
             */
-           #pragma omp critical 
-           {
-            XF(world, b) += xf;
-            YF(world, b) += yf;
-            XF(world, c) -= xf;
-            YF(world, c) -= yf;
-           }
-            
+           #pragma omp critical
+            {
+                XF(world, b) += xf;
+                YF(world, b) += yf;
+                XF(world, c) -= xf;
+                YF(world, c) -= yf;
+            }
         }
     }
 }
 
 static void compute_velocities(struct world *world){
+    int b;
     #pragma omp parallel for
-    for (int b = lborder; b < rborder; ++b) {
+    for (b = world_rank; b < world->bodyCt; b += P) {
         double xv = XV(world, b);
         double yv = YV(world, b);
         double force = sqrt(xv*xv + yv*yv) * FRICTION;
@@ -210,8 +219,9 @@ static void compute_velocities(struct world *world){
 }
 
 static void compute_positions(struct world *world){
-    #pragma omp parallel for    
-    for (int b = lborder; b < rborder; ++b) {
+    int b;
+    #pragma omp parallel for
+    for (b = world_rank; b < world->bodyCt; b += P) {
         double xn = X(world, b) + XV(world, b) * DELTA_T;
         double yn = Y(world, b) + YV(world, b) * DELTA_T;
 
@@ -392,13 +402,13 @@ int main(int argc, char **argv){
     struct filemap image_map;
     int dim_to_send[2];
             
+    // Setting up OpenMP environment
+    omp_set_num_threads(2);
+
     // Setting up MPI environment
     MPI_Init(NULL, NULL);
     MPI_Comm_size(MPI_COMM_WORLD, &P);
     MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
-
-    // Setting up OpenMP Context
-    omp_set_num_threads(2);
 
     struct world *world = (struct world*)calloc(1, sizeof *world);
     if (world == NULL) {
@@ -410,6 +420,7 @@ int main(int argc, char **argv){
     if (argc != 5) {
         fprintf(stderr, "Usage: %s num_bodies secs_per_update ppm_output_file steps\n",
                 argv[0]);
+    // omp_set_num_threads(2);
         exit(1);
     }
     if ((world->bodyCt = atol(argv[1])) > MAXBODIES ) {
@@ -452,6 +463,7 @@ int main(int argc, char **argv){
 
     /* Initialize simulation data */
     srand(SEED);
+    
     for (b = 0; b < world->bodyCt; ++b) {
         X(world, b) = (rand() % world->xdim);
         Y(world, b) = (rand() % world->ydim);
@@ -492,17 +504,20 @@ int main(int argc, char **argv){
         rtime = (end.tv_sec + (end.tv_usec / 1000000.0)) - 
                     (start.tv_sec + (start.tv_usec / 1000000.0));
 
-        fprintf(stderr, "N-body took %10.3f seconds\n", rtime);
         for(int i = 1; i < P; ++i){
-            MPI_Recv(&world->bodies[i * chunk_size], chunk_size * sizeof(struct bodyType) / sizeof(double), MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &status);    
+            for(int j = i; j < world->bodyCt; j += P)
+                MPI_Recv(&world->bodies[j], sizeof(struct bodyType) / sizeof(double), MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &status);    
         }
         print(world);
     } else {
         // send info to master node ...
-        MPI_Send(&world->bodies[lborder], chunk_size * sizeof(struct bodyType) / sizeof(double), MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
+        for(int j = world_rank; j < world->bodyCt; j += P)
+            MPI_Send(&world->bodies[j], sizeof(struct bodyType) / sizeof(double), MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
     }
     
     MPI_Finalize();
+    if(on_master())
+        fprintf(stderr, "N-body took %10.3f seconds\n", rtime);
     free(world);
     free(forces);
     free(forces2);
