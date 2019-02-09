@@ -191,7 +191,7 @@ static void compute_forces(struct world *world){
             /* Slightly sneaky...
                force of b on c is negative of c on b;
             */
-           #pragma omp critical
+		#pragma omp critical
             {
                 XF(world, b) += xf;
                 YF(world, b) += yf;
@@ -401,7 +401,7 @@ int main(int argc, char **argv){
     int dim_to_send[2];
             
     // Setting up OpenMP environment
-    omp_set_num_threads(2);
+    omp_set_num_threads(4);
 
     // Setting up MPI environment
     MPI_Init(NULL, NULL);
