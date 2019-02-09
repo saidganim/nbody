@@ -1,1 +1,1 @@
-prun -np 4 -2 -script $PRUN_ETC/prun-openmpi ./nbody-par 512 0 ../nbody.ppm 10000
+prun -np 8 -2 -script $PRUN_ETC/prun-openmpi ./nbody-par 512 0 ../nbody.ppm 10000
