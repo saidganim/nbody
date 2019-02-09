@@ -203,9 +203,8 @@ static void compute_forces(struct world *world){
 }
 
 static void compute_velocities(struct world *world){
-    int b;
     #pragma omp parallel for
-    for (b = world_rank; b < world->bodyCt; b += P) {
+    for (int b = world_rank; b < world->bodyCt; b += P) {
         double xv = XV(world, b);
         double yv = YV(world, b);
         double force = sqrt(xv*xv + yv*yv) * FRICTION;
@@ -219,9 +218,8 @@ static void compute_velocities(struct world *world){
 }
 
 static void compute_positions(struct world *world){
-    int b;
     #pragma omp parallel for
-    for (b = world_rank; b < world->bodyCt; b += P) {
+    for (int b = world_rank; b < world->bodyCt; b += P) {
         double xn = X(world, b) + XV(world, b) * DELTA_T;
         double yn = Y(world, b) + YV(world, b) * DELTA_T;
 
