@@ -429,9 +429,9 @@ int main(int argc, char **argv){
     MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
 
     // Setting up OpenMP environment
-    omp_set_num_threads(2);
+    omp_set_num_threads(4);
 
-        struct world *world = (struct world*)calloc(1, sizeof *world);
+    struct world *world = (struct world*)calloc(1, sizeof *world);
     if (world == NULL) {
         fprintf(stderr, "Cannot calloc(world)\n");
         exit(1);
