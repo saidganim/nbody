@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <mpi.h>
 #include <omp.h>
+#include <atomic>
 
 #define GRAVITY     1.1
 #define FRICTION    0.01
@@ -34,8 +35,8 @@ double *coords2;
 struct bodyType {
     double x[2];        /* Old and new X-axis coordinates */
     double y[2];        /* Old and new Y-axis coordinates */
-    double xf;          /* force along X-axis */
-    double yf;          /* force along Y-axis */
+    std::atomic<double>  xf;          /* force along X-axis */
+    std::atomic<double>  yf;          /* force along Y-axis */
     double xv;          /* velocity along X-axis */
     double yv;          /* velocity along Y-axis */
     double mass;        /* Mass of the body */
@@ -69,6 +70,22 @@ struct world {
 #define MIN(a,b) ({__typeof__(a) _a = a; __typeof__(b) _b = b;\
                     _a < _b? _a : _b;})
 
+
+double operator+=(std::atomic<double>& lhs, double rhs){
+	double expected = lhs.load();
+	while(!atomic_compare_exchange_weak(&lhs, &expected, expected + rhs));
+	return expected;
+
+}
+
+double operator-=(std::atomic<double>& lhs, double rhs){
+	double expected = lhs.load();
+	while(!atomic_compare_exchange_weak(&lhs, &expected, expected - rhs));
+	return expected;
+
+}
+
+
 static inline int on_master(){
   return world_rank == 0;
 }
@@ -91,14 +108,14 @@ void gather_coords(struct world* world){
         coords[j * 2 + 1] = Y(world, i);
     }
 
-    #pragma omp parallel for
+    //#pragma omp parallel for
     for(int i = 0; i < P; ++i){
         if(i == world_rank) continue;
         MPI_Isend(coords, chunk_size * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &request);
     }
 
     // Receiving coordinates of other process
-    #pragma omp parallel for
+   // #pragma omp parallel for
     for(int i = 0; i < P; ++i){
         if(i == world_rank) continue;
         MPI_Recv(coords2, chunk_size * 2, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &status);
@@ -191,9 +208,13 @@ static void compute_forces(struct world *world){
             /* Slightly sneaky...
                force of b on c is negative of c on b;
             */
-		#pragma omp critical
+		//#pragma omp critical
             {
-                XF(world, b) += xf;
+               // __sync_add_and_fetch(&XF(world, b), xf, __ATOMIC_RELAXED);
+               // __sync_add_and_fetch(&YF(world, b), yf, __ATOMIC_RELAXED);
+               // __sync_add_and_fetch(&XF(world, c), -xf, __ATOMIC_RELAXED);
+               // __sync_add_and_fetch(&YF(world, c), -yf, __ATOMIC_RELAXED);
+		XF(world, b) += xf;
                 YF(world, b) += yf;
                 XF(world, c) -= xf;
                 YF(world, c) -= yf;
@@ -383,7 +404,7 @@ static void print(struct world *world){
 
     for (b = 0; b < world->bodyCt; ++b) {
         printf("%10.3f %10.3f %10.3f %10.3f %10.3f %10.3f\n",
-               X(world, b), Y(world, b), XF(world, b), YF(world, b), XV(world, b), YV(world, b));
+               X(world, b), Y(world, b), XF(world, b).load(), YF(world, b).load(), XV(world, b), YV(world, b));
     }
 }
 
@@ -399,14 +420,16 @@ int main(int argc, char **argv){
     struct timeval end;
     struct filemap image_map;
     int dim_to_send[2];
-            
-    // Setting up OpenMP environment
-    omp_set_num_threads(4);
-
+    int provided, flag, claimed;
+    
     // Setting up MPI environment
     MPI_Init(NULL, NULL);
+   // MPI_Init_thread(NULL, NULL, MPI_THREAD_MULTIPLE, &provided);
     MPI_Comm_size(MPI_COMM_WORLD, &P);
     MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+
+    // Setting up OpenMP environment
+    omp_set_num_threads(4);
 
     struct world *world = (struct world*)calloc(1, sizeof *world);
     if (world == NULL) {
